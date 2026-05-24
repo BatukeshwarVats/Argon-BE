@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: argon-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: argon
+      POSTGRES_PASSWORD: argon
+      POSTGRES_DB: argon
+    ports:
+      - "5433:5432"   # host 5432 commonly taken by a local postgres
+    volumes:
+      - argon_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U argon -d argon"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: argon-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"   # host 6379 commonly taken by a local redis
+    volumes:
+      - argon_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: argon-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: argonadmin
+      MINIO_ROOT_PASSWORD: argonadmin
+    ports:
+      - "9100:9000"   # S3 API (host:container) — host 9000 commonly taken on macOS
+      - "9101:9001"   # Web console
+    volumes:
+      - argon_minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  argon_pg_data:
+  argon_redis_data:
+  argon_minio_data:

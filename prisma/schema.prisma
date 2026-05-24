@@ -1,0 +1,54 @@
+// ──────────────────────────────────────────────────────────────
+// Argon-BE database schema
+// ──────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ImageStatus {
+  PENDING        // accepted by API, queued for processing
+  PROCESSING     // worker is running the validation pipeline
+  ACCEPTED       // passed every validator
+  REJECTED       // failed at least one validator
+  FAILED         // unexpected error (infra failure, not a rejection)
+}
+
+/// One row per uploaded image.
+/// Indexed for the two access patterns:
+///   1) list-by-user paginated by createdAt (gallery view)
+///   2) similarity lookup by perceptual hash
+model Image {
+  id               String       @id @default(uuid())
+  userId           String       // hardcoded "demo-user" for now; ready for auth
+  originalName     String
+  mimeType         String
+  sizeBytes        Int
+  width            Int?
+  height           Int?
+
+  // S3 keys — original is what the client uploaded.
+  // display is the converted JPEG for HEIC (null for non-HEIC originals).
+  s3KeyOriginal    String
+  s3KeyDisplay     String?
+
+  // Perceptual hash (64-bit pHash, stored hex). Used for "too similar" check.
+  perceptualHash   String?
+
+  status           ImageStatus  @default(PENDING)
+
+  // Array of { code: string, message: string } — every rule that rejected.
+  rejectionReasons Json?
+
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@index([userId, status, createdAt(sort: Desc)])
+  @@index([userId, perceptualHash])
+  @@map("images")
+}
