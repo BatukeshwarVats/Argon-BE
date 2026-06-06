@@ -23,6 +23,7 @@ import { buildDefaultPipeline } from './pipeline/pipeline.factory';
 import type { ValidationContext } from './validators/validator.interface';
 import { logger } from '../shared/logger';
 import { eventBus } from '../shared/events';
+import { enqueueConvert } from '../infra/queue/pipeline-queues';
 
 export function startWorker() {
   const { storage } = buildContainer();
@@ -101,6 +102,11 @@ export function startWorker() {
         status: updated.status,
         at: updated.updatedAt.toISOString(),
       });
+
+      // Validation passed → hand off to the media-processing pipeline
+      // (convert → compress → variants). The image now flows automatically
+      // through the three downstream services.
+      await enqueueConvert(imageId);
       logger.info({ imageId }, 'worker.job.accepted');
     },
     {

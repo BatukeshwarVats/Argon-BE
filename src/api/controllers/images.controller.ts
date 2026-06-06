@@ -72,7 +72,7 @@ export class ImagesController {
         limit: query.limit,
         cursor: query.cursor,
       });
-      const items = await Promise.all(rows.map((r) => this.service.toView(r)));
+      const items = await this.service.toViews(rows);
       res.json({
         items,
         nextCursor: items.length === query.limit ? items[items.length - 1].id : null,
@@ -88,6 +88,68 @@ export class ImagesController {
       const { id } = imageIdParamSchema.parse(req.params);
       const row = await this.service.getById(id);
       res.json(await this.service.toView(row));
+    } catch (err) {
+      next(err);
+    }
+  };
+
+  // GET /api/images/:id/variants  — the generated thumbnail/web/full sizes
+  variants = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = imageIdParamSchema.parse(req.params);
+      const variants = await this.service.getVariants(id);
+      res.json({ imageId: id, variants });
+    } catch (err) {
+      next(err);
+    }
+  };
+
+  // POST /api/images/:id/reprocess  — re-run the media pipeline (idempotent)
+  reprocess = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = imageIdParamSchema.parse(req.params);
+      const row = await this.service.reprocess(id);
+      res.status(202).json(await this.service.toView(row));
+    } catch (err) {
+      next(err);
+    }
+  };
+
+  // POST /api/images/seed  — load-test entry: inject directly into the pipeline
+  // (multipart field "images"). Skips validation; non-production only.
+  seed = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+      if (files.length === 0) {
+        throw new ValidationError('No files uploaded. Use multipart field "images".');
+      }
+      const results = await Promise.allSettled(
+        files.map((f) =>
+          this.service.seedForPipeline({
+            userId: req.userId,
+            originalName: f.originalname,
+            buffer: f.buffer,
+            declaredMime: f.mimetype,
+          }),
+        ),
+      );
+      const accepted: Array<{ id: string; status: string }> = [];
+      const rejected: Array<{ originalName: string; error: { code: string; message: string } }> = [];
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i];
+        if (r.status === 'fulfilled') {
+          accepted.push({ id: r.value.id, status: r.value.status });
+        } else {
+          rejected.push({
+            originalName: files[i].originalname,
+            error: {
+              code: r.reason?.code ?? 'INTERNAL_ERROR',
+              message: r.reason?.message ?? 'Seed failed',
+            },
+          });
+        }
+      }
+      res.status(202).json({ accepted, rejected });
     } catch (err) {
       next(err);
     }

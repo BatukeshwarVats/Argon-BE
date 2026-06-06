@@ -1,0 +1,548 @@
+openapi: 3.1.0
+info:
+  title: Argon-BE — Image Upload, Validation & Media Pipeline API
+  version: 0.2.0
+  description: |
+    REST + SSE API for uploading images, validating them, running a scalable
+    media-processing pipeline, and listening to results in real time.
+
+    ## How the flow works
+
+    1. `POST /api/images` — accepts one or more files (multipart). The API
+       sniffs the MIME from magic bytes, stores the original in S3, persists a
+       row with status `PENDING`, enqueues a job, and returns **202**.
+    2. A background worker runs the validation pipeline
+       (`Format → Dimension → Blur → Face → Similarity`). Status transitions
+       `PENDING → PROCESSING → ACCEPTED | REJECTED`.
+    3. **Media pipeline (Part 2)** — on `ACCEPTED`, the image automatically
+       enters three independently-scalable, stateless services chained by
+       queues:
+       `convert → compress → variants`, with statuses
+       `PROCESSING_CONVERT → PROCESSING_COMPRESS → PROCESSING_VARIANTS → COMPLETED`.
+       - **Conversion**: normalise to a canonical upright JPEG.
+       - **Compression**: shrink bytes (mozjpeg); records compression ratio.
+       - **Variants**: generate `THUMBNAIL`, `WEB`, `FULL`; stored in S3 and
+         recorded in the DB. Retrieve via `GET /api/images/{id}/variants`.
+    4. Any stage error → status `FAILED` with a human-readable `processingError`.
+    5. The frontend listens on `GET /api/images/events` (Server-Sent Events)
+       and updates the UI in real time as statuses change.
+
+    ## Idempotency
+
+    Reprocessing (`POST /api/images/{id}/reprocess`) is safe: deterministic S3
+    keys + an upsert on the unique `(imageId, type)` constraint mean a re-run
+    overwrites the same three variants in place — never duplicates.
+
+    ## Load testing
+
+    `POST /api/images/seed` injects images straight into the media pipeline
+    (skipping face/blur validation) so the three services can be load-tested in
+    isolation. Non-production only.
+
+    ## Auth
+
+    All endpoints read an `x-user-id` header. If absent it defaults to
+    `demo-user`. Swap the middleware for real JWT auth without touching any
+    other layer.
+
+    ## Rejection codes
+
+    Stable, machine-readable codes — branch your UI off these, not the messages.
+    See `RejectionCode` schema for the full list.
+
+  contact:
+    name: Argon-BE
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:4000
+    description: Local dev
+
+tags:
+  - name: images
+    description: Image upload, retrieval, and streaming status
+  - name: system
+    description: Health and observability
+
+components:
+  parameters:
+    UserHeader:
+      in: header
+      name: x-user-id
+      required: false
+      schema: { type: string }
+      description: Identifies the user. Falls back to `demo-user`.
+
+  schemas:
+    ImageStatus:
+      type: string
+      enum:
+        - PENDING
+        - PROCESSING
+        - ACCEPTED
+        - REJECTED
+        - FAILED
+        - PROCESSING_CONVERT
+        - PROCESSING_COMPRESS
+        - PROCESSING_VARIANTS
+        - COMPLETED
+      description: |
+        Validation states: PENDING, PROCESSING, ACCEPTED, REJECTED, FAILED.
+        Media-pipeline states (after ACCEPTED): PROCESSING_CONVERT,
+        PROCESSING_COMPRESS, PROCESSING_VARIANTS, COMPLETED (terminal success).
+
+    VariantType:
+      type: string
+      enum: [THUMBNAIL, WEB, FULL]
+
+    VariantView:
+      type: object
+      required: [type, url, width, height, sizeBytes]
+      properties:
+        type: { $ref: '#/components/schemas/VariantType' }
+        url:
+          type: string
+          format: uri
+          description: Presigned S3 GET URL for this sized variant.
+        width: { type: integer }
+        height: { type: integer }
+        sizeBytes: { type: integer }
+
+    RejectionCode:
+      type: string
+      enum:
+        - UNSUPPORTED_FORMAT
+        - FILE_TOO_SMALL_BYTES
+        - RESOLUTION_TOO_LOW
+        - IMAGE_TOO_BLURRY
+        - NO_FACE_DETECTED
+        - FACE_TOO_SMALL
+        - MULTIPLE_FACES
+        - DUPLICATE_IMAGE
+        - CORRUPT_FILE
+
+    RejectionReason:
+      type: object
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/RejectionCode' }
+        message: { type: string }
+        meta:
+          type: object
+          additionalProperties: true
+
+    ImageView:
+      type: object
+      description: Public-facing image record returned by every read endpoint.
+      required:
+        - id
+        - userId
+        - originalName
+        - mimeType
+        - sizeBytes
+        - status
+        - originalUrl
+        - createdAt
+        - updatedAt
+      properties:
+        id: { type: string, format: uuid }
+        userId: { type: string }
+        originalName: { type: string }
+        mimeType: { type: string }
+        sizeBytes: { type: integer }
+        width: { type: integer, nullable: true }
+        height: { type: integer, nullable: true }
+        status: { $ref: '#/components/schemas/ImageStatus' }
+        rejectionReasons:
+          type: array
+          nullable: true
+          items: { $ref: '#/components/schemas/RejectionReason' }
+        originalUrl:
+          type: string
+          format: uri
+          description: Presigned S3 GET URL (expires per SIGNED_URL_TTL_SECONDS).
+        displayUrl:
+          type: string
+          format: uri
+          nullable: true
+          description: Presigned URL for the converted JPEG (only set if HEIC was converted).
+        processingError:
+          type: string
+          nullable: true
+          description: Human-readable reason a media-pipeline stage failed (status FAILED).
+        compression:
+          type: object
+          nullable: true
+          description: Set once the compression stage runs.
+          required: [compressedBytes, ratio, savedPct]
+          properties:
+            compressedBytes: { type: integer }
+            ratio:
+              type: number
+              description: compressedBytes / normalizedBytes (lower is better).
+            savedPct:
+              type: number
+              description: Percentage of bytes saved, i.e. (1 - ratio) * 100.
+        variants:
+          type: array
+          description: Generated sized versions (empty until the variant stage completes).
+          items: { $ref: '#/components/schemas/VariantView' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+      examples:
+        - id: 0f5e9c23-ccff-426e-8419-de1b15bf02eb
+          userId: demo-user
+          originalName: portrait.jpg
+          mimeType: image/jpeg
+          sizeBytes: 184223
+          width: 1024
+          height: 1024
+          status: ACCEPTED
+          rejectionReasons: null
+          originalUrl: https://minio.local/argon-images/users/demo-user/originals/0f5e….jpg?X-Amz-Signature=…
+          displayUrl: null
+          createdAt: '2026-05-24T07:08:13.778Z'
+          updatedAt: '2026-05-24T07:08:14.020Z'
+        - id: 22468e89-7aed-418c-8983-608470cda152
+          userId: demo-user
+          originalName: tiny.jpg
+          mimeType: image/jpeg
+          sizeBytes: 294
+          width: null
+          height: null
+          status: REJECTED
+          rejectionReasons:
+            - code: FILE_TOO_SMALL_BYTES
+              message: 'File is too small (294 bytes < 8192)'
+              meta: { bytes: 294, threshold: 8192 }
+          originalUrl: https://minio.local/argon-images/users/demo-user/originals/22468e89….jpg?X-Amz-Signature=…
+          displayUrl: null
+          createdAt: '2026-05-24T07:07:50.000Z'
+          updatedAt: '2026-05-24T07:07:50.800Z'
+
+    UploadBatchResponse:
+      type: object
+      required: [accepted, rejected]
+      properties:
+        accepted:
+          type: array
+          items: { $ref: '#/components/schemas/ImageView' }
+          description: Successfully queued for processing. Status will start at PENDING.
+        rejected:
+          type: array
+          description: Files rejected synchronously at upload (format / size). Async rejections come via SSE.
+          items:
+            type: object
+            required: [originalName, error]
+            properties:
+              originalName: { type: string }
+              error:
+                type: object
+                required: [code, message]
+                properties:
+                  code: { type: string }
+                  message: { type: string }
+
+    ListImagesResponse:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ImageView' }
+        nextCursor:
+          type: string
+          nullable: true
+          description: Pass back as `cursor` to fetch the next page. `null` when at the end.
+
+    ImageStatusEvent:
+      type: object
+      description: SSE payload emitted whenever an image owned by the user changes state.
+      required: [imageId, userId, status, at]
+      properties:
+        imageId: { type: string, format: uuid }
+        userId: { type: string }
+        status: { $ref: '#/components/schemas/ImageStatus' }
+        rejectionReasons:
+          type: array
+          nullable: true
+          items: { $ref: '#/components/schemas/RejectionReason' }
+        at: { type: string, format: date-time }
+      examples:
+        - imageId: 0f5e9c23-ccff-426e-8419-de1b15bf02eb
+          userId: demo-user
+          status: PROCESSING
+          rejectionReasons: null
+          at: '2026-05-24T07:08:13.778Z'
+        - imageId: 0f5e9c23-ccff-426e-8419-de1b15bf02eb
+          userId: demo-user
+          status: REJECTED
+          rejectionReasons:
+            - code: NO_FACE_DETECTED
+              message: 'No face detected in image'
+          at: '2026-05-24T07:08:14.020Z'
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details:
+              type: object
+              additionalProperties: true
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness check
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+
+  /api/images:
+    post:
+      tags: [images]
+      summary: Upload one or more images
+      parameters:
+        - $ref: '#/components/parameters/UserHeader'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [images]
+              properties:
+                images:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+            encoding:
+              images:
+                contentType: image/jpeg, image/png, image/heic, image/heif
+      responses:
+        '202':
+          description: Files accepted for asynchronous processing
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadBatchResponse' }
+        '400':
+          description: No files in request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413':
+          description: File exceeds size limit
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Unsupported media type
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Rate limited
+
+    get:
+      tags: [images]
+      summary: List images for the user
+      parameters:
+        - $ref: '#/components/parameters/UserHeader'
+        - in: query
+          name: status
+          schema: { $ref: '#/components/schemas/ImageStatus' }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 24, minimum: 1, maximum: 100 }
+        - in: query
+          name: cursor
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Paginated list
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ListImagesResponse' }
+
+  /api/images/seed:
+    post:
+      tags: [images]
+      summary: Seed images directly into the media pipeline (load testing)
+      description: |
+        Stores each file and injects it straight into the media-processing
+        pipeline (status `ACCEPTED` → `convert`), skipping face/blur/duplicate
+        validation. Used by the load-test script to stress the three services in
+        isolation. Non-production only.
+      parameters:
+        - $ref: '#/components/parameters/UserHeader'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [images]
+              properties:
+                images:
+                  type: array
+                  items: { type: string, format: binary }
+      responses:
+        '202':
+          description: Images accepted into the pipeline
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted, rejected]
+                properties:
+                  accepted:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        status: { $ref: '#/components/schemas/ImageStatus' }
+                  rejected:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        originalName: { type: string }
+                        error:
+                          type: object
+                          properties:
+                            code: { type: string }
+                            message: { type: string }
+
+  /api/images/{id}/variants:
+    get:
+      tags: [images]
+      summary: Get the generated variants (thumbnail / web / full) for an image
+      parameters:
+        - $ref: '#/components/parameters/UserHeader'
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Variant list (empty array if not yet generated)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imageId, variants]
+                properties:
+                  imageId: { type: string, format: uuid }
+                  variants:
+                    type: array
+                    items: { $ref: '#/components/schemas/VariantView' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/images/{id}/reprocess:
+    post:
+      tags: [images]
+      summary: Re-run the media pipeline for an image (idempotent)
+      description: |
+        Re-enqueues the image from the conversion stage. Safe to call repeatedly:
+        deterministic S3 keys + upsert on `(imageId, type)` mean the same three
+        variants are overwritten in place — never duplicated.
+      parameters:
+        - $ref: '#/components/parameters/UserHeader'
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '202':
+          description: Reprocess enqueued; returns the (now PROCESSING_CONVERT) image
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImageView' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/images/{id}:
+    get:
+      tags: [images]
+      summary: Get one image
+      parameters:
+        - $ref: '#/components/parameters/UserHeader'
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImageView' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+    delete:
+      tags: [images]
+      summary: Delete an image (DB row + S3 objects)
+      parameters:
+        - $ref: '#/components/parameters/UserHeader'
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Deleted
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/images/events:
+    get:
+      tags: [images]
+      summary: Server-Sent Events stream of image status changes
+      description: |
+        Open this endpoint with `EventSource`. The server emits `image.status`
+        events whenever any image owned by the user changes state.
+
+        ```
+        event: image.status
+        data: {"imageId":"…","userId":"demo-user","status":"ACCEPTED","at":"…"}
+        ```
+
+        The connection emits a heartbeat comment every ~25 s to keep proxies alive.
+      parameters:
+        - $ref: '#/components/parameters/UserHeader'
+      responses:
+        '200':
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/ImageStatusEvent'

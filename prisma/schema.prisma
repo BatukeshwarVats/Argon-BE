@@ -12,11 +12,24 @@ datasource db {
 }
 
 enum ImageStatus {
-  PENDING        // accepted by API, queued for processing
-  PROCESSING     // worker is running the validation pipeline
-  ACCEPTED       // passed every validator
-  REJECTED       // failed at least one validator
-  FAILED         // unexpected error (infra failure, not a rejection)
+  PENDING              // accepted by API, queued for validation
+  PROCESSING           // worker is running the validation pipeline
+  ACCEPTED             // passed every validator — about to enter the media pipeline
+  REJECTED             // failed at least one validator
+  FAILED               // unexpected error (infra failure or a pipeline-stage error)
+
+  // ── Media processing pipeline (Part 2) — runs only after ACCEPTED ──
+  PROCESSING_CONVERT   // conversion service: normalise to a canonical JPEG
+  PROCESSING_COMPRESS  // compression service: shrink bytes, keep quality
+  PROCESSING_VARIANTS  // variant service: generate thumbnail / web / full
+  COMPLETED            // all variants generated — terminal success
+}
+
+/// Logical size buckets produced by the variant-generation service.
+enum VariantType {
+  THUMBNAIL
+  WEB
+  FULL
 }
 
 /// One row per uploaded image.
@@ -45,10 +58,46 @@ model Image {
   // Array of { code: string, message: string } — every rule that rejected.
   rejectionReasons Json?
 
+  // ── Media processing pipeline outputs (Part 2) ──
+  // Canonical JPEG produced by the conversion service.
+  normalizedKey    String?
+  // Compressed JPEG + its accounting, produced by the compression service.
+  compressedKey    String?
+  compressedBytes  Int?
+  compressionRatio Float?       // compressedBytes / normalizedBytes (lower = better)
+  // Human-readable reason a pipeline stage failed (surfaced to the user).
+  processingError  String?
+
+  variants         Variant[]
+
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
 
   @@index([userId, status, createdAt(sort: Desc)])
   @@index([userId, perceptualHash])
   @@map("images")
+}
+
+/// A generated, sized version of an image (thumbnail / web / full).
+///
+/// The unique (imageId, type) constraint is the backbone of idempotency:
+/// reprocessing a job upserts the same three rows instead of creating
+/// duplicates, no matter how many times the variant stage runs.
+model Variant {
+  id        String      @id @default(uuid())
+  imageId   String
+  image     Image       @relation(fields: [imageId], references: [id], onDelete: Cascade)
+
+  type      VariantType
+  s3Key     String
+  width     Int
+  height    Int
+  sizeBytes Int
+
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@unique([imageId, type])
+  @@index([imageId])
+  @@map("variants")
 }

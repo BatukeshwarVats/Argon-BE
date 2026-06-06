@@ -43,6 +43,30 @@ const schema = z.object({
   SIMILARITY_HAMMING_THRESHOLD: z.coerce.number().int().nonnegative().default(5),
 
   FACE_MODEL_PATH: z.string().default('./models'),
+
+  // ── Media processing pipeline (Part 2) ──
+  // Compression: mozjpeg quality (1–100). Lower = smaller file, less quality.
+  COMPRESSION_QUALITY: z.coerce.number().int().min(1).max(100).default(72),
+
+  // Variant target widths (px on the long edge). Height auto-scales to preserve
+  // aspect ratio; we never upscale past the source.
+  VARIANT_THUMB_WIDTH: z.coerce.number().int().positive().default(320),
+  VARIANT_WEB_WIDTH: z.coerce.number().int().positive().default(1080),
+  VARIANT_FULL_WIDTH: z.coerce.number().int().positive().default(2048),
+
+  // Per-service worker concurrency. Each service is an independent process, so
+  // these are tuned separately (compression/variants are CPU-heavier).
+  CONVERT_CONCURRENCY: z.coerce.number().int().positive().default(4),
+  COMPRESS_CONCURRENCY: z.coerce.number().int().positive().default(4),
+  VARIANTS_CONCURRENCY: z.coerce.number().int().positive().default(4),
+
+  // Which pipeline service(s) a worker process should run.
+  // "all" (default) runs all three in one process — handy for `npm run dev`.
+  // Set to "convert" | "compress" | "variants" to scale a single stage
+  // independently (run N processes of just that one).
+  PROCESSING_SERVICE: z
+    .enum(['all', 'convert', 'compress', 'variants'])
+    .default('all'),
 });
 
 const parsed = schema.safeParse(process.env);

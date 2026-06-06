@@ -15,3 +15,13 @@ export const upload = multer({
     files: 10,
   },
 });
+
+// Higher file-count limit for the load-test seed endpoint, which may submit
+// images in larger batches. Same per-file size cap.
+export const uploadBatch = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: config.UPLOAD_MAX_BYTES,
+    files: 200,
+  },
+});

@@ -7,9 +7,17 @@
     "build": "tsc -p tsconfig.json",
     "dev:api": "tsx watch src/server.ts",
     "dev:worker": "tsx watch src/worker.ts",
-    "dev": "concurrently -n api,worker -c blue,magenta \"npm:dev:api\" \"npm:dev:worker\"",
+    "dev:processing": "tsx watch src/processing.ts",
+    "dev:convert": "PROCESSING_SERVICE=convert tsx watch src/processing.ts",
+    "dev:compress": "PROCESSING_SERVICE=compress tsx watch src/processing.ts",
+    "dev:variants": "PROCESSING_SERVICE=variants tsx watch src/processing.ts",
+    "dev": "concurrently -n api,validate,pipeline -c blue,magenta,green \"npm:dev:api\" \"npm:dev:worker\" \"npm:dev:processing\"",
     "start:api": "node dist/server.js",
     "start:worker": "node dist/worker.js",
+    "start:processing": "node dist/processing.js",
+    "loadtest": "tsx scripts/load-test.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
@@ -59,7 +67,8 @@
     "concurrently": "^8.2.2",
     "prisma": "^5.18.0",
     "tsx": "^4.17.0",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.2"
   },
   "engines": {
     "node": ">=20"

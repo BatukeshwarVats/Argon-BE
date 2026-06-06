@@ -45,9 +45,12 @@ export function buildApp() {
     standardHeaders: true,
     legacyHeaders: false,
   });
-  app.use(['/api/images'], (req, res, next) =>
-    req.method === 'GET' ? next() : writeLimiter(req, res, next),
-  );
+  app.use(['/api/images'], (req, res, next) => {
+    // Reads are cheap (no limiter). The load-test seed endpoint legitimately
+    // bursts, so it's exempt (it's a non-production entry anyway).
+    if (req.method === 'GET' || req.path === '/seed') return next();
+    return writeLimiter(req, res, next);
+  });
 
   app.get('/healthz', (_req, res) => res.json({ ok: true }));
 

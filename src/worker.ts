@@ -12,13 +12,14 @@ import { startWorker } from './workers/image.worker';
 import { logger } from './shared/logger';
 import { disconnectPrisma } from './infra/db/prisma';
 import { closeEvents } from './shared/events';
+import { closePipelineQueues } from './infra/queue/pipeline-queues';
 
 const worker = startWorker();
 
 async function shutdown(signal: string) {
   logger.info({ signal }, 'worker.shutdown.begin');
   await worker.close();
-  await Promise.allSettled([disconnectPrisma(), closeEvents()]);
+  await Promise.allSettled([closePipelineQueues(), disconnectPrisma(), closeEvents()]);
   logger.info('worker.shutdown.done');
   process.exit(0);
 }

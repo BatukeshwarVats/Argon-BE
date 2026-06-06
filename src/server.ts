@@ -10,6 +10,7 @@ import { config } from './config';
 import { logger } from './shared/logger';
 import { disconnectPrisma } from './infra/db/prisma';
 import { closeQueue } from './infra/queue/queue';
+import { closePipelineQueues } from './infra/queue/pipeline-queues';
 import { closeEvents, startEventSubscriber } from './shared/events';
 
 const app = buildApp();
@@ -25,7 +26,7 @@ const server = app.listen(config.PORT, () => {
 async function shutdown(signal: string) {
   logger.info({ signal }, 'shutdown.begin');
   server.close();
-  await Promise.allSettled([closeQueue(), disconnectPrisma(), closeEvents()]);
+  await Promise.allSettled([closeQueue(), closePipelineQueues(), disconnectPrisma(), closeEvents()]);
   logger.info('shutdown.done');
   process.exit(0);
 }

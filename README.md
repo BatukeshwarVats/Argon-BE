@@ -1,32 +1,138 @@
-# Argon-BE — Image Upload & Validation Backend
+# Argon-BE — Image Upload, Validation & Media Pipeline Backend
 
-Backend for the Aragon.ai SDE-2 image-upload challenge. Accepts image uploads,
-runs them through a configurable validation pipeline asynchronously, and streams
-real-time status to the frontend.
+Backend for the Aragon.ai challenge. Accepts image uploads, runs them through a
+configurable **validation** pipeline (Part 1), then a scalable **media
+processing** pipeline — convert → compress → variants (Part 2) — asynchronously,
+and streams real-time status to the frontend.
 
 ## Architecture at a glance
 
 ```
 Client ─▶ Express API ─▶ S3 (originals)
                 │
-                ├──▶ Postgres (metadata, status, rejection reasons)
-                └──▶ BullMQ (Redis) ─▶ Worker process
-                                          │
-                                          ├─▶ Validation pipeline
-                                          │     1. Format     (cheap)
-                                          │     2. Dimension  (cheap)
-                                          │     3. Blur       (medium)
-                                          │     4. Face       (heavy)
-                                          │     5. Similarity (medium)
-                                          │
-                                          └─▶ Redis pub/sub ─▶ SSE ─▶ Client
+                ├──▶ Postgres (metadata, status, variants)
+                └──▶ BullMQ (Redis)
+                       │
+                       ▼
+        ┌────────────────────────────┐
+        │ Validation worker          │   Format→Dimension→Blur→Face→Similarity
+        │ (image-processing queue)   │   PENDING→PROCESSING→ACCEPTED/REJECTED
+        └────────────┬───────────────┘
+                     │ on ACCEPTED → enqueue convert
+                     ▼
+   ┌─────────────┐   ┌──────────────┐   ┌───────────────┐
+   │ Conversion  │──▶│ Compression  │──▶│   Variants    │   ← 3 independent,
+   │  service    │   │   service    │   │   service     │     stateless services,
+   │ (q: convert)│   │ (q: compress)│   │ (q: variants) │     one queue each
+   └─────────────┘   └──────────────┘   └───────┬───────┘
+   PROCESSING_       PROCESSING_         PROCESSING_VARIANTS
+   CONVERT           COMPRESS            → COMPLETED
+                     │
+                     └──▶ Redis pub/sub ─▶ SSE ─▶ Client (live status per stage)
 ```
 
-- **API** is thin: parse → enqueue → 202. Never blocks on validation.
-- **Worker** runs the pipeline. Scales independently from HTTP.
-- **Pipeline** is Strategy + Chain of Responsibility. Each rule = one class.
+- **API** is thin: parse → enqueue → 202. Never blocks on processing.
+- **Validation worker** runs the Part-1 pipeline; on ACCEPT it hands off to the media pipeline.
+- **Three media services** (convert / compress / variants) are **stateless** and
+  **independently scalable** — each consumes its own queue. The queue boundary *is*
+  the service boundary; jobs carry only an `imageId` and rehydrate state from DB + S3.
+- **Validation pipeline** is Strategy + Chain of Responsibility. Each rule = one class.
 - **Storage** is `IStorageAdapter`; S3 implementation works against MinIO or AWS S3.
 - **Events** flow via Redis pub/sub so multiple API replicas all receive SSE updates.
+
+## Part 2 — the media processing pipeline
+
+After validation accepts an image, it flows automatically through three services
+chained by queues. Status walks `ACCEPTED → PROCESSING_CONVERT →
+PROCESSING_COMPRESS → PROCESSING_VARIANTS → COMPLETED` (or `FAILED` with a clear
+`processingError`).
+
+| Service | Queue | Does | Writes |
+|---------|-------|------|--------|
+| **Conversion** | `pipeline-convert` | Normalise to an upright canonical JPEG (HEIC→JPEG, EXIF rotate, flatten) | `normalizedKey` |
+| **Compression** | `pipeline-compress` | Re-encode with mozjpeg at `COMPRESSION_QUALITY`; record ratio | `compressedKey`, `compressedBytes`, `compressionRatio` |
+| **Variants** | `pipeline-variants` | Generate `THUMBNAIL` / `WEB` / `FULL`, upload each, upsert a `Variant` row | 3 `Variant` rows → `COMPLETED` |
+
+### Why one queue per stage (deployment choice)
+
+Each stage is an **independently scalable, stateless consumer**. To scale
+compression alone, run more compression workers — nothing else changes. Splitting
+a stage into its own deployable container is mechanical: point its worker process
+at the same Redis. One codebase with three queues was chosen over three separate
+HTTP services to fit the time box while still satisfying *stateless + independently
+scalable*; the queue is already the service boundary.
+
+```bash
+# Run all three in one process (dev):
+npm run dev:processing
+
+# Or scale a single stage independently — run N of just that one:
+PROCESSING_SERVICE=compress COMPRESS_CONCURRENCY=8 npm run dev:processing
+```
+
+### Idempotency — reprocessing never duplicates
+
+Reprocessing the same job is safe by construction, on two layers:
+
+1. **Deterministic S3 keys** — `users/{userId}/{imageId}/variants/{type}.jpg` etc.
+   A re-run overwrites the same object in place.
+2. **`upsert` on the unique `(imageId, type)` constraint** — a re-run updates the
+   same three rows instead of inserting new ones.
+
+So no matter how many times the pipeline runs for an image, there are **exactly
+three variants**. (The automatic, validation-triggered enqueue also uses a
+deterministic `jobId` to collapse accidental double-enqueues; explicit
+`POST /:id/reprocess` uses a fresh jobId so it always runs, relying on the two
+guarantees above for safety.)
+
+### Scalability & load testing
+
+```bash
+# Start the API + both workers (validation + all 3 pipeline services):
+npm run dev
+
+# Fire a concurrent batch of images straight at the pipeline and measure:
+COUNT=100 CONCURRENCY=20 npm run loadtest
+```
+
+The load test (`scripts/load-test.ts`) generates N unique synthetic JPEGs,
+submits them concurrently to `POST /api/images/seed` (which injects directly into
+the pipeline, bypassing face validation so we stress the *three services* in
+isolation), polls to completion, and prints **throughput** + **p50/p95 latency**.
+
+To demonstrate horizontal scaling, run it twice and compare the throughput line:
+
+```bash
+# baseline: 1 worker per stage
+CONVERT_CONCURRENCY=1 COMPRESS_CONCURRENCY=1 VARIANTS_CONCURRENCY=1 npm run dev:processing
+COUNT=100 npm run loadtest        # note images/sec
+
+# scaled: 8 per stage (or run several dev:processing processes)
+CONVERT_CONCURRENCY=8 COMPRESS_CONCURRENCY=8 VARIANTS_CONCURRENCY=8 npm run dev:processing
+COUNT=100 npm run loadtest        # throughput rises
+```
+
+#### Reading the output
+
+```
+Results
+  submitted:        48      ← reached the pipeline (HTTP 202 from /seed)
+  completed:        48      ← finished all 3 stages (status COMPLETED)
+  failed:           0       ← ended in FAILED (a stage errored)
+  total wall time:  8.05 s  ← submit of first → completion of last
+  throughput:       5.96 images/sec   ← completed ÷ wall time (the headline number)
+  end-to-end latency (submit → COMPLETED):
+    p50: 4609 ms   ← half of images finished within this
+    p95: 6618 ms   ← 95% finished within this (tail latency)
+    max: ...
+```
+
+- **throughput** is the number to compare across worker counts — more workers →
+  higher images/sec until a downstream resource (CPU, Postgres, S3) saturates.
+- **p50 vs p95**: a tight gap = even processing; a wide gap = queue contention /
+  a slow stage. Latency rising while throughput holds means you're at capacity.
+- **submitted vs completed**: any shortfall is surfaced as `failed` or
+  `stuck (timeout)` — the script never hides a drop.
 
 ## Tech
 
@@ -58,13 +164,44 @@ src/
 ├── shared/                   Logger, errors, events, DI container
 ├── workers/
 │   ├── validators/           One file per rule (Strategy pattern)
-│   ├── pipeline/             Chain-of-Responsibility pipeline + factory
+│   ├── pipeline/             Chain-of-Responsibility validation pipeline + factory
 │   ├── processors/           HEIC convert, pHash, face detector wrapper
-│   └── image.worker.ts       BullMQ consumer
+│   ├── processing/           Part 2 — media pipeline
+│   │   ├── processors/       Pure image ops (normalize, compress, resize) + tests
+│   │   ├── keys.ts           Deterministic S3 key layout
+│   │   ├── conversion.worker.ts
+│   │   ├── compression.worker.ts
+│   │   └── variants.worker.ts
+│   └── image.worker.ts       Validation BullMQ consumer
 ├── app.ts                    Express app factory
 ├── server.ts                 API process entrypoint
-└── worker.ts                 Worker process entrypoint
+├── worker.ts                 Validation worker entrypoint
+└── processing.ts             Media-pipeline worker entrypoint (PROCESSING_SERVICE)
 ```
+
+## Data model
+
+```
+Image
+  id, userId, originalName, mimeType, sizeBytes, width, height
+  s3KeyOriginal, s3KeyDisplay, perceptualHash
+  status         PENDING|PROCESSING|ACCEPTED|REJECTED|FAILED
+                 |PROCESSING_CONVERT|PROCESSING_COMPRESS|PROCESSING_VARIANTS|COMPLETED
+  rejectionReasons (json)
+  normalizedKey, compressedKey, compressedBytes, compressionRatio   ← Part 2
+  processingError                                                   ← Part 2
+  variants  Variant[]
+  createdAt, updatedAt
+
+Variant                                                            ← Part 2
+  id, imageId (FK → Image, cascade)
+  type       THUMBNAIL | WEB | FULL
+  s3Key, width, height, sizeBytes
+  @@unique([imageId, type])    ← idempotency backbone (upsert target)
+```
+
+See `docs/architecture.md` for the full system design (diagrams, sequence,
+state machine, scaling & idempotency).
 
 ## Setup
 
@@ -92,17 +229,29 @@ npm run bootstrap
 
 ### Run
 
-Two processes — easiest in one terminal with:
+Three processes — easiest in one terminal with:
 
 ```bash
-npm run dev
+npm run dev           # API + validation worker + all 3 pipeline services
 ```
 
 Or separately:
 
 ```bash
-npm run dev:api       # API on :4000
-npm run dev:worker    # worker
+npm run dev:api         # API on :4000
+npm run dev:worker      # validation worker
+npm run dev:processing  # media pipeline (convert + compress + variants)
+
+# …or one stage at a time, to scale independently:
+npm run dev:convert
+npm run dev:compress
+npm run dev:variants
+```
+
+### Test
+
+```bash
+npm test                # vitest unit tests (pure image ops + key layout)
 ```
 
 MinIO console: <http://localhost:9101> (login `argonadmin` / `argonadmin`)
@@ -170,7 +319,26 @@ Returns `{ items: ImageView[], nextCursor: string | null }`. Keyset pagination.
 
 ### `GET /api/images/:id`
 
-Returns the latest `ImageView` for that image.
+Returns the latest `ImageView` for that image — now including `processingError`,
+`compression` (`{ compressedBytes, ratio, savedPct }`), and `variants[]`
+(`{ type, url, width, height, sizeBytes }`) once the pipeline completes.
+
+### `GET /api/images/:id/variants`
+
+Returns `{ imageId, variants: VariantView[] }` — the generated thumbnail / web /
+full sizes with presigned URLs and metadata.
+
+### `POST /api/images/:id/reprocess`
+
+Re-runs the media pipeline from the top. **Idempotent** — overwrites the same
+three variants, never duplicates. Returns 202 with the (now `PROCESSING_CONVERT`)
+image.
+
+### `POST /api/images/seed`  *(load testing; non-production)*
+
+Multipart `images`. Stores each file and injects it straight into the media
+pipeline (status `ACCEPTED` → convert), skipping face/blur/duplicate validation
+so the three services can be load-tested in isolation. Used by `npm run loadtest`.
 
 ### `DELETE /api/images/:id`
 
@@ -187,7 +355,7 @@ Event payload:
 {
   "imageId": "0f5e…",
   "userId": "demo-user",
-  "status": "ACCEPTED" | "PROCESSING" | "REJECTED" | "FAILED",
+  "status": "PROCESSING" | "ACCEPTED" | "REJECTED" | "FAILED" | "PROCESSING_CONVERT" | "PROCESSING_COMPRESS" | "PROCESSING_VARIANTS" | "COMPLETED",
   "rejectionReasons": [{ "code": "FACE_TOO_SMALL", "message": "…", "meta": {…} }] | null,
   "at": "2025-…"
 }
@@ -221,10 +389,22 @@ Event payload:
 | `FACE_MAX_COUNT`               | 1       | Single-subject portraits |
 | `SIMILARITY_HAMMING_THRESHOLD` | 5       | ≤ 5 bits of a 64-bit pHash differ |
 
+### Media pipeline (Part 2)
+
+| Variable | Default | Rationale |
+|----------|--------:|-----------|
+| `COMPRESSION_QUALITY` | 72 | mozjpeg sweet spot — big savings, no visible loss |
+| `VARIANT_THUMB_WIDTH` | 320 | Grid thumbnails / avatars |
+| `VARIANT_WEB_WIDTH` | 1080 | In-app display |
+| `VARIANT_FULL_WIDTH` | 2048 | Downloads / zoom (never upscales) |
+| `CONVERT/COMPRESS/VARIANTS_CONCURRENCY` | 4 | Per-stage parallelism, tuned independently |
+| `PROCESSING_SERVICE` | all | Which stage(s) a process runs (`all`/`convert`/`compress`/`variants`) |
+
 ## Design patterns in play
 
 - **Strategy** — each `IValidator` is a swappable rule.
 - **Chain of Responsibility** — `ValidationPipeline` runs validators in order, fails fast.
+- **Pipes & Filters** — the media pipeline is queue-chained stages, each a stateless filter over bytes.
 - **Factory** — `buildDefaultPipeline()` is the only place ordering changes.
 - **Adapter** — `IStorageAdapter` decouples the domain from S3.
 - **Repository** — `ImageRepository` shields services from Prisma.

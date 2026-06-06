@@ -1,0 +1,207 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1480 1180" font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3.5 L0,7 Z" fill="#475569"/>
+    </marker>
+    <marker id="arrowEm" markerWidth="12" markerHeight="12" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3.5 L0,7 Z" fill="#059669"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="12" markerHeight="12" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,3.5 L0,7 Z" fill="#2563eb"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1480" height="1180" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="740" y="44" text-anchor="middle" font-size="28" font-weight="700" fill="#0f172a">Argon — Image Upload, Validation &amp; Media-Processing Pipeline</text>
+  <text x="740" y="72" text-anchor="middle" font-size="15" fill="#64748b">Two asynchronous stages (validate → process) over a shared queue + object-storage backbone. Stateless, horizontally scalable.</text>
+
+  <!-- ================= TOP ROW: Browser → API → Redis → Validation worker ================= -->
+
+  <!-- Browser -->
+  <rect x="30" y="110" width="220" height="190" rx="12" fill="#eff6ff" stroke="#3b82f6" stroke-width="2"/>
+  <text x="140" y="138" text-anchor="middle" font-size="16" font-weight="700" fill="#1d4ed8">Browser (Next.js)</text>
+  <line x1="46" y1="150" x2="234" y2="150" stroke="#bfdbfe" stroke-width="1"/>
+  <text x="48" y="174" font-size="12.5" fill="#1e293b">• Drag-drop upload (Zustand)</text>
+  <text x="48" y="198" font-size="12.5" fill="#1e293b">• Live status via SSE</text>
+  <text x="48" y="222" font-size="12.5" fill="#1e293b">• Gallery + variant preview</text>
+  <text x="48" y="246" font-size="12.5" fill="#1e293b">• Download thumb / web / full</text>
+  <text x="48" y="276" font-size="11" fill="#64748b">Same-origin /api/* → Next proxy</text>
+
+  <!-- API process -->
+  <rect x="300" y="100" width="250" height="210" rx="12" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+  <text x="425" y="128" text-anchor="middle" font-size="16" font-weight="700" fill="#4338ca">API process (Express)</text>
+  <line x1="316" y1="140" x2="534" y2="140" stroke="#c7d2fe" stroke-width="1"/>
+  <rect x="316" y="150" width="218" height="34" rx="6" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="425" y="172" text-anchor="middle" font-size="11.5" fill="#1e293b">Upload: sniff MIME + size cap</text>
+  <rect x="316" y="190" width="218" height="34" rx="6" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="425" y="212" text-anchor="middle" font-size="11.5" fill="#1e293b">ImageService: S3 put → DB → enqueue</text>
+  <rect x="316" y="230" width="218" height="34" rx="6" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="425" y="252" text-anchor="middle" font-size="11.5" fill="#1e293b">REST: list/get/variants/reprocess/seed</text>
+  <rect x="316" y="270" width="218" height="30" rx="6" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="425" y="290" text-anchor="middle" font-size="11.5" fill="#1e293b">SSE /events fan-out · returns 202</text>
+
+  <!-- Redis -->
+  <rect x="600" y="100" width="200" height="360" rx="12" fill="#fef2f2" stroke="#ef4444" stroke-width="2"/>
+  <text x="700" y="128" text-anchor="middle" font-size="16" font-weight="700" fill="#b91c1c">Redis</text>
+  <text x="700" y="146" text-anchor="middle" font-size="11" fill="#9b1c1c">BullMQ queues + Pub/Sub</text>
+  <line x1="616" y1="156" x2="784" y2="156" stroke="#fecaca" stroke-width="1"/>
+  <rect x="616" y="168" width="168" height="40" rx="6" fill="#ffffff" stroke="#fecaca"/>
+  <text x="700" y="184" text-anchor="middle" font-size="11" font-weight="600" fill="#1e293b">queue: image-processing</text>
+  <text x="700" y="200" text-anchor="middle" font-size="10.5" fill="#64748b">(validation)</text>
+  <rect x="616" y="216" width="168" height="34" rx="6" fill="#ffffff" stroke="#fecaca"/>
+  <text x="700" y="237" text-anchor="middle" font-size="11" font-weight="600" fill="#1e293b">queue: pipeline-convert</text>
+  <rect x="616" y="258" width="168" height="34" rx="6" fill="#ffffff" stroke="#fecaca"/>
+  <text x="700" y="279" text-anchor="middle" font-size="11" font-weight="600" fill="#1e293b">queue: pipeline-compress</text>
+  <rect x="616" y="300" width="168" height="34" rx="6" fill="#ffffff" stroke="#fecaca"/>
+  <text x="700" y="321" text-anchor="middle" font-size="11" font-weight="600" fill="#1e293b">queue: pipeline-variants</text>
+  <rect x="616" y="342" width="168" height="40" rx="6" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="700" y="358" text-anchor="middle" font-size="10.5" font-weight="600" fill="#9a3412">channel:</text>
+  <text x="700" y="373" text-anchor="middle" font-size="10.5" fill="#9a3412">argon:image.status</text>
+  <text x="700" y="404" text-anchor="middle" font-size="10.5" fill="#64748b">3 retries · expo backoff</text>
+  <text x="700" y="420" text-anchor="middle" font-size="10.5" fill="#64748b">deterministic jobId (validate)</text>
+  <text x="700" y="436" text-anchor="middle" font-size="10.5" fill="#64748b">→ dedups accidental enqueue</text>
+
+  <!-- Validation worker -->
+  <rect x="850" y="100" width="590" height="150" rx="12" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="1145" y="128" text-anchor="middle" font-size="16" font-weight="700" fill="#6d28d9">Validation worker  (process: worker.ts · concurrency 4)</text>
+  <line x1="866" y1="140" x2="1424" y2="140" stroke="#ddd6fe" stroke-width="1"/>
+  <rect x="866" y="150" width="100" height="40" rx="6" fill="#ffffff" stroke="#ddd6fe"/>
+  <text x="916" y="166" text-anchor="middle" font-size="11" fill="#1e293b">Format</text>
+  <text x="916" y="180" text-anchor="middle" font-size="9.5" fill="#64748b">magic bytes</text>
+  <rect x="974" y="150" width="100" height="40" rx="6" fill="#ffffff" stroke="#ddd6fe"/>
+  <text x="1024" y="166" text-anchor="middle" font-size="11" fill="#1e293b">Dimension</text>
+  <text x="1024" y="180" text-anchor="middle" font-size="9.5" fill="#64748b">min px / bytes</text>
+  <rect x="1082" y="150" width="100" height="40" rx="6" fill="#ffffff" stroke="#ddd6fe"/>
+  <text x="1132" y="166" text-anchor="middle" font-size="11" fill="#1e293b">Blur</text>
+  <text x="1132" y="180" text-anchor="middle" font-size="9.5" fill="#64748b">Laplacian var</text>
+  <rect x="1190" y="150" width="110" height="40" rx="6" fill="#ffffff" stroke="#ddd6fe"/>
+  <text x="1245" y="166" text-anchor="middle" font-size="11" fill="#1e293b">Face (TFJS)</text>
+  <text x="1245" y="180" text-anchor="middle" font-size="9.5" fill="#64748b">TinyFaceDetector</text>
+  <rect x="1308" y="150" width="116" height="40" rx="6" fill="#ffffff" stroke="#ddd6fe"/>
+  <text x="1366" y="166" text-anchor="middle" font-size="11" fill="#1e293b">Similarity</text>
+  <text x="1366" y="180" text-anchor="middle" font-size="9.5" fill="#64748b">pHash + Hamming</text>
+  <text x="866" y="214" font-size="11.5" fill="#5b21b6">Strategy + Chain of Responsibility · cheap → expensive · fail-fast</text>
+  <text x="866" y="234" font-size="11.5" fill="#5b21b6" font-weight="600">PENDING → PROCESSING → ACCEPTED (enqueue convert)  |  REJECTED / FAILED</text>
+
+  <!-- ================= MIDDLE ROW: 3 pipeline services ================= -->
+  <rect x="844" y="300" width="600" height="170" rx="14" fill="#f0fdf4" stroke="#16a34a" stroke-width="2" stroke-dasharray="4 3"/>
+  <text x="1144" y="326" text-anchor="middle" font-size="15" font-weight="700" fill="#15803d">Media-processing pipeline — 3 stateless services (process: processing.ts)</text>
+  <text x="1144" y="345" text-anchor="middle" font-size="11" fill="#166534">Each consumes its own queue · jobs carry only imageId · scale each independently (PROCESSING_SERVICE + *_CONCURRENCY)</text>
+
+  <!-- Conversion -->
+  <rect x="866" y="356" width="178" height="100" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="2"/>
+  <text x="955" y="380" text-anchor="middle" font-size="14" font-weight="700" fill="#047857">1 · Conversion</text>
+  <text x="955" y="402" text-anchor="middle" font-size="10.5" fill="#1e293b">HEIC→JPEG, EXIF rotate,</text>
+  <text x="955" y="417" text-anchor="middle" font-size="10.5" fill="#1e293b">flatten → canonical JPEG</text>
+  <text x="955" y="439" text-anchor="middle" font-size="10" fill="#059669">writes normalized.jpg</text>
+
+  <!-- Compression -->
+  <rect x="1055" y="356" width="178" height="100" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="2"/>
+  <text x="1144" y="380" text-anchor="middle" font-size="14" font-weight="700" fill="#047857">2 · Compression</text>
+  <text x="1144" y="402" text-anchor="middle" font-size="10.5" fill="#1e293b">mozjpeg @ quality,</text>
+  <text x="1144" y="417" text-anchor="middle" font-size="10.5" fill="#1e293b">record ratio + bytes</text>
+  <text x="1144" y="439" text-anchor="middle" font-size="10" fill="#059669">writes compressed.jpg</text>
+
+  <!-- Variants -->
+  <rect x="1244" y="356" width="178" height="100" rx="10" fill="#ecfdf5" stroke="#10b981" stroke-width="2"/>
+  <text x="1333" y="380" text-anchor="middle" font-size="14" font-weight="700" fill="#047857">3 · Variants</text>
+  <text x="1333" y="402" text-anchor="middle" font-size="10.5" fill="#1e293b">thumbnail / web / full,</text>
+  <text x="1333" y="417" text-anchor="middle" font-size="10.5" fill="#1e293b">upsert 3 rows → COMPLETED</text>
+  <text x="1333" y="439" text-anchor="middle" font-size="10" fill="#059669">writes variants/*.jpg</text>
+
+  <!-- service chain arrows (via Redis) -->
+  <line x1="1044" y1="406" x2="1053" y2="406" stroke="#059669" stroke-width="2" marker-end="url(#arrowEm)"/>
+  <line x1="1233" y1="406" x2="1242" y2="406" stroke="#059669" stroke-width="2" marker-end="url(#arrowEm)"/>
+
+  <!-- ================= BOTTOM ROW: datastores ================= -->
+  <rect x="300" y="560" width="430" height="150" rx="12" fill="#f8fafc" stroke="#64748b" stroke-width="2"/>
+  <text x="515" y="588" text-anchor="middle" font-size="16" font-weight="700" fill="#334155">Postgres (Prisma)</text>
+  <line x1="316" y1="600" x2="714" y2="600" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="320" y="624" font-size="12" fill="#1e293b">images: status, dims, pHash, rejectionReasons,</text>
+  <text x="320" y="642" font-size="12" fill="#1e293b">   normalizedKey, compressedBytes, compressionRatio, processingError</text>
+  <text x="320" y="666" font-size="12" fill="#1e293b">variants: (type, s3Key, w, h, bytes)</text>
+  <text x="320" y="684" font-size="12" font-weight="600" fill="#0369a1">   UNIQUE(imageId, type)  ← idempotency backbone</text>
+  <text x="320" y="702" font-size="10.5" fill="#64748b">source of truth for metadata + status</text>
+
+  <rect x="780" y="560" width="430" height="150" rx="12" fill="#f8fafc" stroke="#64748b" stroke-width="2"/>
+  <text x="995" y="588" text-anchor="middle" font-size="16" font-weight="700" fill="#334155">MinIO / S3 (object storage)</text>
+  <line x1="796" y1="600" x2="1194" y2="600" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="800" y="624" font-size="12" fill="#1e293b">users/{userId}/originals/{id}.{ext}</text>
+  <text x="800" y="646" font-size="12" fill="#1e293b">users/{userId}/{imageId}/normalized.jpg</text>
+  <text x="800" y="668" font-size="12" fill="#1e293b">users/{userId}/{imageId}/compressed.jpg</text>
+  <text x="800" y="690" font-size="12" fill="#1e293b">users/{userId}/{imageId}/variants/{type}.jpg</text>
+  <text x="800" y="704" font-size="10" font-weight="600" fill="#0369a1">deterministic keys → reprocess overwrites in place</text>
+
+  <!-- ================= ARROWS ================= -->
+  <!-- Browser <-> API -->
+  <line x1="250" y1="180" x2="298" y2="180" stroke="#2563eb" stroke-width="2" marker-end="url(#arrowBlue)"/>
+  <text x="274" y="172" text-anchor="middle" font-size="10.5" fill="#2563eb">POST</text>
+  <line x1="298" y1="230" x2="250" y2="230" stroke="#2563eb" stroke-width="2" marker-end="url(#arrowBlue)"/>
+  <text x="274" y="248" text-anchor="middle" font-size="10.5" fill="#2563eb">SSE push</text>
+
+  <!-- API -> Redis enqueue validate -->
+  <line x1="550" y1="180" x2="598" y2="185" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="575" y="172" text-anchor="middle" font-size="10" fill="#475569">enqueue</text>
+
+  <!-- Redis -> API subscribe -->
+  <line x1="598" y1="360" x2="552" y2="295" stroke="#9a3412" stroke-width="1.6" marker-end="url(#arrow)" stroke-dasharray="5 3"/>
+  <text x="540" y="330" text-anchor="middle" font-size="10" fill="#9a3412">subscribe</text>
+  <text x="540" y="343" text-anchor="middle" font-size="10" fill="#9a3412">status</text>
+
+  <!-- Redis -> Validation worker dequeue -->
+  <line x1="800" y1="170" x2="848" y2="170" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="824" y="162" text-anchor="middle" font-size="10" fill="#475569">dequeue</text>
+
+  <!-- Validation worker -> Redis (enqueue convert + publish) -->
+  <path d="M850,225 C 820,250 800,250 802,260" fill="none" stroke="#059669" stroke-width="2" marker-end="url(#arrowEm)"/>
+  <text x="812" y="246" text-anchor="middle" font-size="9.5" fill="#059669">on ACCEPT:</text>
+  <text x="812" y="280" text-anchor="middle" font-size="9.5" fill="#059669">enqueue convert</text>
+
+  <!-- Redis -> Conversion (dequeue convert) -->
+  <path d="M740,344 C 800,330 820,400 864,406" fill="none" stroke="#059669" stroke-width="2" marker-end="url(#arrowEm)"/>
+  <text x="800" y="372" text-anchor="middle" font-size="9.5" fill="#059669">dequeue convert</text>
+
+  <!-- compute -> datastore vertical arrows -->
+  <!-- API -> Postgres -->
+  <line x1="425" y1="310" x2="470" y2="558" stroke="#475569" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="395" y="430" text-anchor="middle" font-size="10" fill="#475569">INSERT row</text>
+  <!-- API -> MinIO (PUT original) -->
+  <line x1="500" y1="310" x2="880" y2="558" stroke="#475569" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="640" y="455" text-anchor="middle" font-size="10" fill="#475569">PUT original</text>
+
+  <!-- Validation worker -> Postgres (UPDATE) -->
+  <line x1="980" y1="250" x2="640" y2="558" stroke="#7c3aed" stroke-width="1.4" marker-end="url(#arrow)" stroke-dasharray="2 3"/>
+  <text x="900" y="520" text-anchor="middle" font-size="10" fill="#7c3aed">UPDATE status</text>
+  <!-- Validation worker -> MinIO (GET) -->
+  <line x1="1080" y1="250" x2="1050" y2="558" stroke="#7c3aed" stroke-width="1.4" marker-end="url(#arrow)" stroke-dasharray="2 3"/>
+  <text x="1108" y="520" text-anchor="middle" font-size="10" fill="#7c3aed">GET original</text>
+
+  <!-- services -> MinIO + Postgres -->
+  <line x1="955" y1="456" x2="980" y2="558" stroke="#059669" stroke-width="1.6" marker-end="url(#arrowEm)"/>
+  <line x1="1144" y1="456" x2="1080" y2="558" stroke="#059669" stroke-width="1.6" marker-end="url(#arrowEm)"/>
+  <line x1="1333" y1="456" x2="1150" y2="558" stroke="#059669" stroke-width="1.6" marker-end="url(#arrowEm)"/>
+  <text x="1230" y="520" text-anchor="middle" font-size="10" fill="#059669">PUT variants / rows</text>
+  <line x1="1280" y1="456" x2="700" y2="558" stroke="#059669" stroke-width="1.2" marker-end="url(#arrowEm)" stroke-dasharray="2 3"/>
+
+  <!-- ================= LEGEND / FLOW ================= -->
+  <rect x="30" y="760" width="1410" height="190" rx="12" fill="#fafafa" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="50" y="788" font-size="15" font-weight="700" fill="#0f172a">End-to-end flow</text>
+  <text x="50" y="812" font-size="12.5" fill="#1e293b">1. Browser uploads → API sniffs MIME + size, PUTs the original to S3, INSERTs an image row (PENDING), enqueues a validation job, returns 202 immediately.</text>
+  <text x="50" y="834" font-size="12.5" fill="#1e293b">2. Validation worker runs Format→Dimension→Blur→Face→Similarity (fail-fast). Status → PROCESSING, then REJECTED/FAILED, or ACCEPTED.</text>
+  <text x="50" y="856" font-size="12.5" fill="#1e293b">3. On ACCEPTED it enqueues the media pipeline. Conversion → Compression → Variants run as 3 independent queue-driven services, each updating status.</text>
+  <text x="50" y="878" font-size="12.5" fill="#1e293b">4. Variants stage upserts 3 rows (THUMBNAIL/WEB/FULL) to deterministic S3 keys and marks COMPLETED. Every transition is published to Redis pub/sub.</text>
+  <text x="50" y="900" font-size="12.5" fill="#1e293b">5. The API subscribes once and fans each status event out over SSE; the browser updates the card live and, on COMPLETED, fetches variant URLs.</text>
+  <text x="50" y="930" font-size="12" font-weight="600" fill="#0369a1">Scalability: every worker is stateless (state lives in Postgres + S3) → add more workers / run a single stage in isolation to scale that bottleneck.</text>
+
+  <!-- ================= IDEMPOTENCY CALLOUT ================= -->
+  <rect x="30" y="970" width="1410" height="120" rx="12" fill="#f0f9ff" stroke="#0ea5e9" stroke-width="1.5"/>
+  <text x="50" y="998" font-size="15" font-weight="700" fill="#075985">Idempotency — reprocessing never duplicates</text>
+  <text x="50" y="1022" font-size="12.5" fill="#0c4a6e">• Deterministic S3 keys per (userId, imageId, kind) → a re-run overwrites the same objects instead of accumulating new ones.</text>
+  <text x="50" y="1044" font-size="12.5" fill="#0c4a6e">• upsert on UNIQUE(imageId, type) → a re-run updates the same three rows. Result: exactly 3 variants, no matter how many times the pipeline runs.</text>
+  <text x="50" y="1066" font-size="12.5" fill="#0c4a6e">• Internal stage hand-offs use fresh job ids so a reprocess always runs; safety comes from the two guarantees above, not from the queue.</text>
+
+  <!-- footer -->
+  <text x="740" y="1130" text-anchor="middle" font-size="11" fill="#94a3b8">Processes: server.ts (API) · worker.ts (validation) · processing.ts (convert|compress|variants|all) — each independently deployable &amp; scalable.</text>
+</svg>

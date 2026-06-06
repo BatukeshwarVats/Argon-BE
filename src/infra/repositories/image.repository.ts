@@ -6,7 +6,7 @@
  *   for the domain, but for this assignment we let Prisma's generated types
  *   flow through since they already match the Image entity 1:1.
  */
-import type { Image, ImageStatus } from '@prisma/client';
+import type { Image, ImageStatus, Variant, VariantType } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../db/prisma';
 import type { RejectionReason } from '../../shared/rejection-codes';
@@ -18,6 +18,9 @@ export interface CreateImageInput {
   mimeType: string;
   sizeBytes: number;
   s3KeyOriginal: string;
+  // Optional initial status. Defaults to PENDING (validation path); the
+  // load-test seed path passes ACCEPTED to inject straight into the pipeline.
+  status?: ImageStatus;
 }
 
 export interface ListImagesParams {
@@ -116,6 +119,96 @@ export class ImageRepository {
       select: { id: true, perceptualHash: true },
     });
     return rows.map((r) => ({ id: r.id, perceptualHash: r.perceptualHash! }));
+  }
+
+  // ── Media processing pipeline (Part 2) ──────────────────────────────
+
+  /** Move an image to a pipeline stage status, clearing any prior error. */
+  setStatus(id: string, status: ImageStatus): Promise<Image> {
+    return prisma.image.update({
+      where: { id },
+      data: { status, processingError: null },
+    });
+  }
+
+  /** Conversion stage output (status advances at the next stage's start). */
+  setNormalized(id: string, normalizedKey: string): Promise<Image> {
+    return prisma.image.update({
+      where: { id },
+      data: { normalizedKey },
+    });
+  }
+
+  /** Compression stage output + accounting. */
+  setCompressed(
+    id: string,
+    fields: { compressedKey: string; compressedBytes: number; compressionRatio: number },
+  ): Promise<Image> {
+    return prisma.image.update({
+      where: { id },
+      data: {
+        compressedKey: fields.compressedKey,
+        compressedBytes: fields.compressedBytes,
+        compressionRatio: fields.compressionRatio,
+      },
+    });
+  }
+
+  /** Terminal success. */
+  markCompleted(id: string): Promise<Image> {
+    return prisma.image.update({
+      where: { id },
+      data: { status: 'COMPLETED', processingError: null },
+    });
+  }
+
+  /** A pipeline stage failed cleanly — surface the reason, stop the job. */
+  markProcessingFailed(id: string, stage: string, errorMessage: string): Promise<Image> {
+    return prisma.image.update({
+      where: { id },
+      data: { status: 'FAILED', processingError: `[${stage}] ${errorMessage}` },
+    });
+  }
+
+  /**
+   * Idempotent variant write. Keyed on the unique (imageId, type) constraint:
+   * the first run inserts, every reprocess updates the same row in place. No
+   * matter how many times the variant stage runs, there are at most three rows.
+   */
+  upsertVariant(input: {
+    imageId: string;
+    type: VariantType;
+    s3Key: string;
+    width: number;
+    height: number;
+    sizeBytes: number;
+  }): Promise<Variant> {
+    const { imageId, type, ...rest } = input;
+    return prisma.variant.upsert({
+      where: { imageId_type: { imageId, type } },
+      create: { imageId, type, ...rest },
+      update: rest,
+    });
+  }
+
+  listVariants(imageId: string): Promise<Variant[]> {
+    return prisma.variant.findMany({ where: { imageId }, orderBy: { sizeBytes: 'asc' } });
+  }
+
+  /** Bulk-load variants for many images in one query (list view). */
+  async listVariantsForImages(imageIds: string[]): Promise<Map<string, Variant[]>> {
+    const grouped = new Map<string, Variant[]>();
+    if (imageIds.length === 0) return grouped;
+    const rows = await prisma.variant.findMany({
+      where: { imageId: { in: imageIds } },
+      orderBy: { sizeBytes: 'asc' },
+    });
+    for (const v of rows) {
+      const list = grouped.get(v.imageId) ?? [];
+      list.push(v);
+      grouped.set(v.imageId, list);
+    }
+    return grouped;
   }
 }
 
